@@ -2,7 +2,7 @@
 
 A self-contained Java desktop application that controls a **kv4p HT** VHF ham‑radio
 transceiver over USB serial. It is a port of the original Android app, rebuilt with
-**JDK 26 + Maven + Swing** and no Android/Google dependencies.
+**JDK 21 + Maven + Swing** and no Android/Google dependencies.
 
 The on‑the‑wire protocol to the ESP32 firmware is reproduced **byte‑for‑byte** from the
 original app, so this desktop build talks to the same hardware/firmware unchanged.
@@ -14,7 +14,7 @@ original app, so this desktop build talks to the same hardware/firmware unchange
 
 ## Requirements
 
-- **JDK 26** (to build and to run from source). The packaged fat‑jar runs on any JRE ≥ 26.
+- **JDK 21** (to build and to run from source). The packaged fat‑jar
 - **Maven 3.9+** (only to build).
 - A sound card with an 8‑bit, 22.05 kHz, mono line (see *Known limitations*).
 - OS serial drivers for the kv4p board's CP210x USB‑UART bridge (Silicon Labs VCP driver
