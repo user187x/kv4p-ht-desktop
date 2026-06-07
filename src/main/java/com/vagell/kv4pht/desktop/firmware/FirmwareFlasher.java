@@ -28,127 +28,137 @@ import java.nio.file.Path;
 
 public class FirmwareFlasher {
 
-    /** Version of the firmware bundled with this build. */
-    public static final int PACKAGED_FIRMWARE_VER = 17;
+  /** Version of the firmware bundled with this build. */
+  public static final int PACKAGED_FIRMWARE_VER = 17;
 
-    // (resource/file name, flash offset) in flash order.
-    private static final String[] FILE_NAMES = {
-            "bootloader.bin",
-            "partitions.bin",
-            "boot_app0.bin",
-            "firmware_v17.bin"
-    };
-    private static final int[] FILE_OFFSETS = {0x1000, 0x8000, 0xE000, 0x10000};
+  // (resource/file name, flash offset) in flash order.
+  private static final String[] FILE_NAMES = {
+    "bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware_v17.bin"
+  };
+  private static final int[] FILE_OFFSETS = {0x1000, 0x8000, 0xE000, 0x10000};
 
-    public interface Callback {
-        void connectedToBootloader();
-        void reportProgress(int percent);
-        void doneFlashing(boolean success);
-        default void info(String message) {}
-    }
+  public interface Callback {
+    void connectedToBootloader();
 
-    private volatile boolean flashing = false;
-    private int progressPercent = 0;
+    void reportProgress(int percent);
 
-    public boolean isFlashing() { return flashing; }
+    void doneFlashing(boolean success);
 
-    /**
-     * Runs the full flash sequence on the calling thread (callers run this off
-     * the EDT). {@code io} must be a serial channel to a board already in
-     * bootloader mode.
-     */
-    public void flashFirmware(EspFlasher.SerialIO io, Callback callback) {
-        if (flashing) return;
-        flashing = true;
-        progressPercent = 0;
-        boolean failed = false;
+    default void info(String message) {}
+  }
 
-        try {
-            byte[][] images = new byte[FILE_NAMES.length][];
-            for (int i = 0; i < FILE_NAMES.length; i++) {
-                images[i] = loadFirmware(FILE_NAMES[i]);
-                if (images[i] == null || images[i].length == 0) {
-                    callback.info("Could not find firmware file: " + FILE_NAMES[i]);
-                    callback.doneFlashing(false);
-                    return;
-                }
+  private volatile boolean flashing = false;
+  private int progressPercent = 0;
+
+  public boolean isFlashing() {
+    return flashing;
+  }
+
+  /**
+   * Runs the full flash sequence on the calling thread (callers run this off the EDT). {@code io}
+   * must be a serial channel to a board already in bootloader mode.
+   */
+  public void flashFirmware(EspFlasher.SerialIO io, Callback callback) {
+    if (flashing) return;
+    flashing = true;
+    progressPercent = 0;
+    boolean failed = false;
+
+    try {
+      byte[][] images = new byte[FILE_NAMES.length][];
+      for (int i = 0; i < FILE_NAMES.length; i++) {
+        images[i] = loadFirmware(FILE_NAMES[i]);
+        if (images[i] == null || images[i].length == 0) {
+          callback.info("Could not find firmware file: " + FILE_NAMES[i]);
+          callback.doneFlashing(false);
+          return;
+        }
+      }
+
+      EspFlasher.Progress progress =
+          new EspFlasher.Progress() {
+            @Override
+            public void onInfo(String msg) {
+              callback.info(msg);
             }
 
-            EspFlasher.Progress progress = new EspFlasher.Progress() {
-                @Override public void onInfo(String msg) { callback.info(msg); }
-                @Override public void onUploading(int value) {
-                    // Spread each file's 0..100% into the current 10% band of the bar.
-                    if (progressPercent >= 20 && progressPercent < 30) {
-                        track(callback, Math.min(50, (int) (20 + (10 * (value / 100.0f)))));
-                    } else if (progressPercent >= 50) {
-                        track(callback, Math.min(100, (int) (50 + (50 * (value / 100.0f)))));
-                    }
-                }
-            };
-
-            EspFlasher cmd = new EspFlasher(io, progress);
-
-            callback.info("Attempting to init ESP32 for firmware flash");
-            if (!cmd.initChip()) {
-                callback.info("ESP32 failed to init (is it in bootloader mode?)");
-                failed = true;
+            @Override
+            public void onUploading(int value) {
+              // Spread each file's 0..100% into the current 10% band of the bar.
+              if (progressPercent >= 20 && progressPercent < 30) {
+                track(callback, Math.min(50, (int) (20 + (10 * (value / 100.0f)))));
+              } else if (progressPercent >= 50) {
+                track(callback, Math.min(100, (int) (50 + (50 * (value / 100.0f)))));
+              }
             }
+          };
 
-            if (!failed) {
-                callback.connectedToBootloader();
-                track(callback, 10);
-                cmd.init();
-                track(callback, 20);
+      EspFlasher cmd = new EspFlasher(io, progress);
 
-                callback.info("Flashing firmware");
-                cmd.flashData(images[0], FILE_OFFSETS[0], 0);
-                track(callback, 30);
-                cmd.flashData(images[1], FILE_OFFSETS[1], 0);
-                track(callback, 40);
-                cmd.flashData(images[2], FILE_OFFSETS[2], 0);
-                track(callback, 50);
-                cmd.flashData(images[3], FILE_OFFSETS[3], 0);
+      callback.info("Attempting to init ESP32 for firmware flash");
+      if (!cmd.initChip()) {
+        callback.info("ESP32 failed to init (is it in bootloader mode?)");
+        failed = true;
+      }
 
-                cmd.reset();
-                callback.info("Done flashing firmware");
-            }
-        } catch (Throwable t) {
-            failed = true;
-            callback.info("Flashing error: " + t.getMessage());
-        } finally {
-            callback.doneFlashing(!failed);
-            progressPercent = 0;
-            flashing = false;
-        }
+      if (!failed) {
+        callback.connectedToBootloader();
+        track(callback, 10);
+        cmd.init();
+        track(callback, 20);
+
+        callback.info("Flashing firmware");
+        cmd.flashData(images[0], FILE_OFFSETS[0], 0);
+        track(callback, 30);
+        cmd.flashData(images[1], FILE_OFFSETS[1], 0);
+        track(callback, 40);
+        cmd.flashData(images[2], FILE_OFFSETS[2], 0);
+        track(callback, 50);
+        cmd.flashData(images[3], FILE_OFFSETS[3], 0);
+
+        cmd.reset();
+        callback.info("Done flashing firmware");
+      }
+    } catch (Throwable t) {
+      failed = true;
+      callback.info("Flashing error: " + t.getMessage());
+    } finally {
+      callback.doneFlashing(!failed);
+      progressPercent = 0;
+      flashing = false;
     }
+  }
 
-    private void track(Callback callback, int newPercent) {
-        progressPercent = newPercent;
-        callback.reportProgress(progressPercent);
-    }
+  private void track(Callback callback, int newPercent) {
+    progressPercent = newPercent;
+    callback.reportProgress(progressPercent);
+  }
 
-    /**
-     * Loads a firmware image: first from the classpath (/firmware/&lt;name&gt;,
-     * i.e. bundled in the jar), then from ~/.kv4p-desktop/firmware/&lt;name&gt;.
-     */
-    private byte[] loadFirmware(String name) {
-        try (InputStream in = FirmwareFlasher.class.getResourceAsStream("/firmware/" + name)) {
-            if (in != null) return readAll(in);
-        } catch (IOException ignored) {
-            // fall through to filesystem
-        }
-        Path p = Path.of(System.getProperty("user.home"), ".kv4p-desktop", "firmware", name);
-        if (Files.isReadable(p)) {
-            try { return Files.readAllBytes(p); } catch (IOException ignored) {}
-        }
-        return null;
+  /**
+   * Loads a firmware image: first from the classpath (/firmware/&lt;name&gt;, i.e. bundled in the
+   * jar), then from ~/.kv4p-desktop/firmware/&lt;name&gt;.
+   */
+  private byte[] loadFirmware(String name) {
+    try (InputStream in = FirmwareFlasher.class.getResourceAsStream("/firmware/" + name)) {
+      if (in != null) return readAll(in);
+    } catch (IOException ignored) {
+      // fall through to filesystem
     }
+    Path p = Path.of(System.getProperty("user.home"), ".kv4p-desktop", "firmware", name);
+    if (Files.isReadable(p)) {
+      try {
+        return Files.readAllBytes(p);
+      } catch (IOException ignored) {
+      }
+    }
+    return null;
+  }
 
-    private static byte[] readAll(InputStream stream) throws IOException {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = stream.read(buf)) != -1) bos.write(buf, 0, n);
-        return bos.toByteArray();
-    }
+  private static byte[] readAll(InputStream stream) throws IOException {
+    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+    byte[] buf = new byte[8192];
+    int n;
+    while ((n = stream.read(buf)) != -1) bos.write(buf, 0, n);
+    return bos.toByteArray();
+  }
 }

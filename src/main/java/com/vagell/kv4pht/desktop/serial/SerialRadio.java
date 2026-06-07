@@ -12,17 +12,11 @@ package com.vagell.kv4pht.desktop.serial;
 import com.fazecast.jSerialComm.SerialPort;
 import com.vagell.kv4pht.desktop.firmware.EspFlasher;
 import com.vagell.kv4pht.desktop.radio.RadioProtocol;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 public class SerialRadio {
-
-    public interface DataListener {
-        void onData(byte[] data);
-        void onDisconnected();
-    }
 
     private SerialPort port;
     private volatile boolean running = false;
@@ -129,9 +123,6 @@ public class SerialRadio {
         port = null;
     }
 
-    // ====================================================================
-    // Firmware flashing support
-    // ====================================================================
     /**
      * Suspends the normal read loop and hands back a serial channel the firmware
      * flasher can use directly. The port stays open. Call {@link #endFlashing()}
@@ -151,36 +142,43 @@ public class SerialRadio {
         return new PortFlasherIO(port);
     }
 
+    // ====================================================================
+    // Firmware flashing support
+    // ====================================================================
+
     public synchronized void endFlashing() {
         flashing = false;
     }
 
-    /** Adapts a jSerialComm port to the flasher's small SerialIO contract. */
-    private static final class PortFlasherIO implements EspFlasher.SerialIO {
-        private final SerialPort p;
-        PortFlasherIO(SerialPort p) { this.p = p; }
-
-        @Override public int read(byte[] buf, int len, int timeoutMs) {
-            if (p == null || !p.isOpen()) return -1;
-            int n = p.readBytes(buf, Math.min(len, buf.length));
-            return Math.max(n, 0);
-        }
-        @Override public void write(byte[] data, int timeoutMs) {
-            if (p == null || !p.isOpen()) return;
-            p.writeBytes(data, data.length);
-        }
-        @Override public void setBaud(int baud) {
-            if (p != null) {
-                p.setComPortParameters(baud, 8, SerialPort.ONE_STOP_BIT, SerialPort.NO_PARITY);
-            }
-        }
-        @Override public void setRTS(boolean on) {
-            if (p == null) return;
-            if (on) p.setRTS(); else p.clearRTS();
-        }
-        @Override public void setDTR(boolean on) {
-            if (p == null) return;
-            if (on) p.setDTR(); else p.clearDTR();
-        }
+    public interface DataListener {
+        void onData(byte[] data);
+        void onDisconnected();
     }
+
+ /** Adapts a jSerialComm port to the flasher's small SerialIO contract. */
+     private record PortFlasherIO(SerialPort p) implements EspFlasher.SerialIO {
+
+  @Override public int read(byte[] buf, int len, int timeoutMs) {
+             if (p == null || !p.isOpen()) return -1;
+             int n = p.readBytes(buf, Math.min(len, buf.length));
+             return Math.max(n, 0);
+         }
+         @Override public void write(byte[] data, int timeoutMs) {
+             if (p == null || !p.isOpen()) return;
+             p.writeBytes(data, data.length);
+         }
+         @Override public void setBaud(int baud) {
+             if (p != null) {
+                 p.setComPortParameters(baud, 8, SerialPort.ONE_STOP_BIT, SerialPort.NO_PARITY);
+             }
+         }
+         @Override public void setRTS(boolean on) {
+             if (p == null) return;
+             if (on) p.setRTS(); else p.clearRTS();
+         }
+         @Override public void setDTR(boolean on) {
+             if (p == null) return;
+             if (on) p.setDTR(); else p.clearDTR();
+         }
+     }
 }

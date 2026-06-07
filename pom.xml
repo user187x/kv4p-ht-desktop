@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
@@ -11,11 +11,12 @@
     <packaging>jar</packaging>
 
     <name>kv4p HT Desktop</name>
-    <description>Offline desktop port of the kv4p HT ham radio transceiver controller (JDK 26 / Maven / Swing).</description>
+    <description>Offline desktop port of the kv4p HT ham radio transceiver controller (JDK 26 / Maven / Swing).
+    </description>
 
     <properties>
         <!-- Target Java 26 as requested. release=26 makes javac compile against the JDK 26 API. -->
-        <maven.compiler.release>21</maven.compiler.release>
+        <maven.compiler.release>26</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <jserialcomm.version>2.11.0</jserialcomm.version>
@@ -44,6 +45,14 @@
             <artifactId>slf4j-nop</artifactId>
             <version>2.0.13</version>
         </dependency>
+
+        <dependency>
+            <groupId>com.formdev</groupId>
+            <artifactId>flatlaf</artifactId>
+            <version>3.7.1</version>
+            <scope>compile</scope>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -64,10 +73,13 @@
                 <executions>
                     <execution>
                         <phase>package</phase>
-                        <goals><goal>shade</goal></goals>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
                         <configuration>
                             <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.vagell.kv4pht.desktop.App</mainClass>
                                     <manifestEntries>
                                         <!-- sqlite-jdbc (and jSerialComm) load native libraries via

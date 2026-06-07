@@ -19,25 +19,25 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 package com.vagell.kv4pht.desktop.radio;
 
 /**
- * Commands understood by the kv4p HT ESP32 firmware. The byte values here are
- * part of the wire protocol and must match the microcontroller code exactly.
- * Ported verbatim from the Android app's RadioAudioService.ESP32Command.
+ * Commands understood by the kv4p HT ESP32 firmware. The byte values here are part of the wire
+ * protocol and must match the microcontroller code exactly. Ported verbatim from the Android app's
+ * RadioAudioService.ESP32Command.
  */
 public enum ESP32Command {
-    PTT_DOWN((byte) 1),
-    PTT_UP((byte) 2),
-    TUNE_TO((byte) 3),          // params: txFreq + rxFreq + tone(2) + squelch(1) + bandwidth(W/N)
-    FILTERS((byte) 4),          // params: emphasis + highpass + lowpass (each '0'/'1')
-    STOP((byte) 5),
-    GET_FIRMWARE_VER((byte) 6);
+  PTT_DOWN((byte) 1),
+  PTT_UP((byte) 2),
+  TUNE_TO((byte) 3), // params: txFreq + rxFreq + tone(2) + squelch(1) + bandwidth(W/N)
+  FILTERS((byte) 4), // params: emphasis + highpass + lowpass (each '0'/'1')
+  STOP((byte) 5),
+  GET_FIRMWARE_VER((byte) 6);
 
-    private final byte commandByte;
+  private final byte commandByte;
 
-    ESP32Command(byte commandByte) {
-        this.commandByte = commandByte;
-    }
+  ESP32Command(byte commandByte) {
+    this.commandByte = commandByte;
+  }
 
-    public byte getByte() {
-        return commandByte;
-    }
+  public byte getByte() {
+    return commandByte;
+  }
 }
