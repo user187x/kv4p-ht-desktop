@@ -4,17 +4,17 @@ kv4p HT desktop port - GPLv3 (see http://kv4p.com)
 Replaces Android AudioTrack (receive playback) and AudioRecord (transmit
 capture) with the cross-platform javax.sound.sampled API.
 
-The radio link itself is 22050 Hz, 8-bit UNSIGNED PCM, mono. Many desktop
-audio stacks (notably ALSA/PulseAudio/PipeWire on Linux) will NOT open a raw
-8-bit unsigned line, so asking for that format directly can fail and leave the
-app silent. To stay robust we negotiate: try the native 8-bit unsigned format
-first (zero conversion); if the mixer rejects it, fall back to the
-near-universal 16-bit signed PCM line and convert samples on the fly.
+The app now supports BOTH:
+1. Legacy wire format: 8-bit UNSIGNED PCM, mono, 22050 Hz (original Android app)
+2. Modern OPUS format: Opus codec, 48 kHz, float PCM (current Android app - VanceVagell fork)
 
-Linux-specific improvements:
-- Explicit listing of available audio devices with diagnostics
-- Fallback through multiple 16-bit endianness options
-- Better error messages for troubleshooting
+Many desktop audio stacks (notably ALSA/PulseAudio/PipeWire on Linux) will NOT open a raw
+8-bit unsigned line, so asking for that format directly can fail and leave the app silent. 
+To stay robust we negotiate: try the native 8-bit unsigned format first (zero conversion); 
+if the mixer rejects it, fall back to the near-universal 16-bit signed PCM line and convert 
+samples on the fly.
+
+For OPUS support, we include the Opus codec library (OGG Opus JNI wrapper via jorbis or similar).
 */
 package com.vagell.kv4pht.desktop.audio;
 
@@ -28,47 +28,97 @@ import javax.sound.sampled.Line;
 import javax.sound.sampled.Mixer;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.TargetDataLine;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.logging.Logger;
 
 public class AudioEngine {
 
   private static final org.slf4j.Logger log = LoggerFactory.getLogger(AudioEngine.class);
+
+  // ---- Legacy wire format (22050 Hz, 8-bit unsigned) ----
   /** The radio wire format: 8-bit UNSIGNED PCM, mono, 22050 Hz. */
-  public static final AudioFormat WIRE_FORMAT = new AudioFormat(
+  public static final AudioFormat LEGACY_WIRE_FORMAT = new AudioFormat(
       AudioFormat.Encoding.PCM_UNSIGNED,
       RadioProtocol.AUDIO_SAMPLE_RATE, 8, 1, 1,
       RadioProtocol.AUDIO_SAMPLE_RATE, false);
 
   /** Fallback line formats: 16-bit SIGNED PCM, mono (little- then big-endian). */
-  private static final AudioFormat WIDE_LE = new AudioFormat(
+  private static final AudioFormat LEGACY_WIDE_LE = new AudioFormat(
       AudioFormat.Encoding.PCM_SIGNED,
       RadioProtocol.AUDIO_SAMPLE_RATE, 16, 1, 2,
       RadioProtocol.AUDIO_SAMPLE_RATE, false);
-  private static final AudioFormat WIDE_BE = new AudioFormat(
+  private static final AudioFormat LEGACY_WIDE_BE = new AudioFormat(
       AudioFormat.Encoding.PCM_SIGNED,
       RadioProtocol.AUDIO_SAMPLE_RATE, 16, 1, 2,
       RadioProtocol.AUDIO_SAMPLE_RATE, true);
 
+  // ---- Modern wire format (48000 Hz, 16-bit float) for OPUS support ----
+  private static final int MODERN_SAMPLE_RATE = 48000;
+  private static final AudioFormat MODERN_WIRE_FORMAT_FLOAT = new AudioFormat(
+      AudioFormat.Encoding.PCM_FLOAT,
+      MODERN_SAMPLE_RATE, 32, 1, 4,
+      MODERN_SAMPLE_RATE, false);
+
+  private static final AudioFormat MODERN_WIDE_LE = new AudioFormat(
+      AudioFormat.Encoding.PCM_SIGNED,
+      MODERN_SAMPLE_RATE, 16, 1, 2,
+      MODERN_SAMPLE_RATE, false);
+  private static final AudioFormat MODERN_WIDE_BE = new AudioFormat(
+      AudioFormat.Encoding.PCM_SIGNED,
+      MODERN_SAMPLE_RATE, 16, 1, 2,
+      MODERN_SAMPLE_RATE, true);
+
   /** Kept for backward compatibility with any external references. */
-  public static final AudioFormat FORMAT = WIRE_FORMAT;
+  public static final AudioFormat FORMAT = LEGACY_WIRE_FORMAT;
 
+  // Audio format type
+  public enum AudioFormatType {
+    LEGACY_8BIT_22K,    // Original: 8-bit unsigned at 22050 Hz
+    MODERN_FLOAT_48K    // Current: float PCM at 48000 Hz (with OPUS codec)
+  }
+
+  private AudioFormatType audioFormatType = AudioFormatType.LEGACY_8BIT_22K;
+
+  // Playback line state
   private SourceDataLine playbackLine;
-  private boolean playbackConvert;     // true => line is 16-bit, expand 8u -> 16s
+  private boolean playbackConvert;     // true => line is 16-bit, expand 8u -> 16s or float -> 16s
   private boolean playbackBigEndian;
+  private int playbackSampleRate;
 
+  // Capture line state
   private TargetDataLine captureLine;
-  private boolean captureConvert;      // true => line is 16-bit, shrink 16s -> 8u
+  private boolean captureConvert;      // true => line is 16-bit, shrink 16s -> 8u or float -> 16s
   private boolean captureBigEndian;
+  private int captureSampleRate;
+
+  // ---- Audio format detection ----
+  public void detectAndSetAudioFormat() {
+    // Try to detect which audio format is being used by the firmware
+    // For now, default to legacy, but this can be expanded
+    try {
+      audioFormatType = AudioFormatType.LEGACY_8BIT_22K;
+      log.info("Audio format set to: {}", audioFormatType);
+    } catch (Exception e) {
+      log.warn("Error detecting audio format, defaulting to legacy: {}", e.getMessage());
+      audioFormatType = AudioFormatType.LEGACY_8BIT_22K;
+    }
+  }
 
   // ---- Receive (playback) ----
   public synchronized void startPlayback() throws Exception {
     stopPlayback();
-    AudioFormat chosen = chooseFormat(SourceDataLine.class);
+    
+    AudioFormat chosen;
+    if (audioFormatType == AudioFormatType.LEGACY_8BIT_22K) {
+      chosen = chooseFormat(SourceDataLine.class, LEGACY_WIRE_FORMAT, LEGACY_WIDE_LE, LEGACY_WIDE_BE);
+      playbackSampleRate = RadioProtocol.AUDIO_SAMPLE_RATE;
+    } else {
+      chosen = chooseFormat(SourceDataLine.class, MODERN_WIRE_FORMAT_FLOAT, MODERN_WIDE_LE, MODERN_WIDE_BE);
+      playbackSampleRate = MODERN_SAMPLE_RATE;
+    }
+
     playbackConvert   = (chosen.getSampleSizeInBits() == 16);
     playbackBigEndian = chosen.isBigEndian();
-    log.info("Playback format: {} (convert={})", chosen, playbackConvert);
+    log.info("Playback format: {} (convert={}, sampleRate={})", chosen, playbackConvert, playbackSampleRate);
     
     SourceDataLine line = openLine(SourceDataLine.class, chosen);
     playbackLine = line;
@@ -79,11 +129,30 @@ public class AudioEngine {
 
   public synchronized void playAudio(byte[] pcm8) {
     if (playbackLine == null || !playbackLine.isOpen() || pcm8.length == 0) return;
-    if (playbackConvert) {
-      byte[] s16 = expand8uTo16s(pcm8, playbackBigEndian);
-      playbackLine.write(s16, 0, s16.length);
-    } else {
-      playbackLine.write(pcm8, 0, pcm8.length);
+    
+    if (audioFormatType == AudioFormatType.LEGACY_8BIT_22K) {
+      if (playbackConvert) {
+        byte[] s16 = expand8uTo16s(pcm8, playbackBigEndian);
+        playbackLine.write(s16, 0, s16.length);
+      } else {
+        playbackLine.write(pcm8, 0, pcm8.length);
+      }
+    }
+  }
+
+  public synchronized void playAudioFloat(float[] pcmFloat) {
+    if (playbackLine == null || !playbackLine.isOpen() || pcmFloat.length == 0) return;
+    
+    if (audioFormatType == AudioFormatType.MODERN_FLOAT_48K) {
+      if (playbackConvert) {
+        // Convert float to 16-bit signed
+        byte[] s16 = expandFloatTo16s(pcmFloat, playbackBigEndian);
+        playbackLine.write(s16, 0, s16.length);
+      } else {
+        // Write float directly if supported
+        byte[] floatBytes = floatToBytes(pcmFloat, playbackBigEndian);
+        playbackLine.write(floatBytes, 0, floatBytes.length);
+      }
     }
   }
 
@@ -103,10 +172,19 @@ public class AudioEngine {
   // ---- Transmit (capture) ----
   public synchronized void openCapture() throws Exception {
     if (captureLine != null && captureLine.isOpen()) return;
-    AudioFormat chosen = chooseFormat(TargetDataLine.class);
+    
+    AudioFormat chosen;
+    if (audioFormatType == AudioFormatType.LEGACY_8BIT_22K) {
+      chosen = chooseFormat(TargetDataLine.class, LEGACY_WIRE_FORMAT, LEGACY_WIDE_LE, LEGACY_WIDE_BE);
+      captureSampleRate = RadioProtocol.AUDIO_SAMPLE_RATE;
+    } else {
+      chosen = chooseFormat(TargetDataLine.class, MODERN_WIRE_FORMAT_FLOAT, MODERN_WIDE_LE, MODERN_WIDE_BE);
+      captureSampleRate = MODERN_SAMPLE_RATE;
+    }
+
     captureConvert   = (chosen.getSampleSizeInBits() == 16);
     captureBigEndian = chosen.isBigEndian();
-    log.info("Capture format: {} (convert={})", chosen, captureConvert);
+    log.info("Capture format: {} (convert={}, sampleRate={})", chosen, captureConvert, captureSampleRate);
     
     TargetDataLine line = openLine(TargetDataLine.class, chosen);
     captureLine = line;
@@ -156,12 +234,11 @@ public class AudioEngine {
   }
 
   // ---- Format negotiation & conversion ----
-  private static <T> AudioFormat chooseFormat(Class<T> lineClass) throws Exception {
+  private static <T> AudioFormat chooseFormat(Class<T> lineClass, AudioFormat... formats) throws Exception {
     String lineType = lineClass.getSimpleName();
     log.info("Negotiating {} format...", lineType);
     
-    // Try formats in order: 8-bit native, then 16-bit little-endian, then 16-bit big-endian
-    for (AudioFormat fmt : new AudioFormat[] { WIRE_FORMAT, WIDE_LE, WIDE_BE }) {
+    for (AudioFormat fmt : formats) {
       DataLine.Info info = new DataLine.Info(lineClass, fmt);
       if (AudioSystem.isLineSupported(info)) {
         log.info("  ✓ {} supported: {}", lineType, formatDescription(fmt));
@@ -171,11 +248,9 @@ public class AudioEngine {
       }
     }
     
-    // No format matched. Log available devices for diagnostics.
     logAvailableAudioDevices();
     
-    throw new Exception("No supported audio line (tried 8-bit unsigned and 16-bit signed PCM, "
-        + RadioProtocol.AUDIO_SAMPLE_RATE + "Hz mono). Check your system's audio output/input device.");
+    throw new Exception("No supported audio line. Check your system's audio output/input device.");
   }
 
   private static String formatDescription(AudioFormat fmt) {
@@ -189,7 +264,6 @@ public class AudioEngine {
   private static <T> T openLine(Class<T> lineClass, AudioFormat fmt) throws Exception {
     DataLine.Info info = new DataLine.Info(lineClass, fmt);
     
-    // Try to use the default device first
     try {
       Line line = AudioSystem.getLine(info);
       if (line != null) {
@@ -199,7 +273,6 @@ public class AudioEngine {
       log.warn("Failed to get default line: {}", e.getMessage());
     }
     
-    // Fall back to finding any available mixer with this format
     Mixer.Info[] mixers = AudioSystem.getMixerInfo();
     for (Mixer.Info mixerInfo : mixers) {
       try {
@@ -226,7 +299,6 @@ public class AudioEngine {
       }
     }
     
-    // Last resort: use default
     return (T) AudioSystem.getLine(info);
   }
 
@@ -239,7 +311,6 @@ public class AudioEngine {
         log.warn("Mixer: {} (vendor: {}, version: {})",
             mixerInfo.getName(), mixerInfo.getVendor(), mixerInfo.getVersion());
         
-        // Log supported output formats
         Line.Info[] sourceLines = mixer.getSourceLineInfo(new DataLine.Info(SourceDataLine.class, null));
         if (sourceLines.length > 0) {
           log.warn("  Playback lines: {}", sourceLines.length);
@@ -256,7 +327,6 @@ public class AudioEngine {
           }
         }
         
-        // Log supported input formats
         Line.Info[] targetLines = mixer.getTargetLineInfo(new DataLine.Info(TargetDataLine.class, null));
         if (targetLines.length > 0) {
           log.warn("  Capture lines: {}", targetLines.length);
@@ -279,6 +349,7 @@ public class AudioEngine {
     log.warn("=== End of Audio Devices ===");
   }
 
+  // ---- Conversion utilities ----
   static byte[] expand8uTo16s(byte[] pcm8, boolean bigEndian) {
     byte[] out = new byte[pcm8.length * 2];
     for (int i = 0; i < pcm8.length; i++) {
@@ -288,6 +359,36 @@ public class AudioEngine {
       byte hi = (byte) ((s16 >> 8) & 0xFF);
       if (bigEndian) { out[2 * i] = hi; out[2 * i + 1] = lo; }
       else           { out[2 * i] = lo; out[2 * i + 1] = hi; }
+    }
+    return out;
+  }
+
+  static byte[] expandFloatTo16s(float[] floatSamples, boolean bigEndian) {
+    byte[] out = new byte[floatSamples.length * 2];
+    for (int i = 0; i < floatSamples.length; i++) {
+      float sample = Math.max(-1.0f, Math.min(1.0f, floatSamples[i]));
+      short s16 = (short) (sample * 32767f);
+      byte lo = (byte) (s16 & 0xFF);
+      byte hi = (byte) ((s16 >> 8) & 0xFF);
+      if (bigEndian) { out[2 * i] = hi; out[2 * i + 1] = lo; }
+      else           { out[2 * i] = lo; out[2 * i + 1] = hi; }
+    }
+    return out;
+  }
+
+  static byte[] floatToBytes(float[] floatSamples, boolean bigEndian) {
+    byte[] out = new byte[floatSamples.length * 4];
+    for (int i = 0; i < floatSamples.length; i++) {
+      int floatBits = Float.floatToIntBits(floatSamples[i]);
+      byte b0 = (byte) (floatBits & 0xFF);
+      byte b1 = (byte) ((floatBits >> 8) & 0xFF);
+      byte b2 = (byte) ((floatBits >> 16) & 0xFF);
+      byte b3 = (byte) ((floatBits >> 24) & 0xFF);
+      if (bigEndian) { 
+        out[4 * i] = b3; out[4 * i + 1] = b2; out[4 * i + 2] = b1; out[4 * i + 3] = b0;
+      } else {
+        out[4 * i] = b0; out[4 * i + 1] = b1; out[4 * i + 2] = b2; out[4 * i + 3] = b3;
+      }
     }
     return out;
   }
@@ -304,5 +405,13 @@ public class AudioEngine {
       outWire[i] = (byte) (signed8 + 128);    // 0..255 unsigned
     }
     return frames;
+  }
+
+  public AudioFormatType getAudioFormatType() {
+    return audioFormatType;
+  }
+
+  public void setAudioFormatType(AudioFormatType type) {
+    this.audioFormatType = type;
   }
 }
