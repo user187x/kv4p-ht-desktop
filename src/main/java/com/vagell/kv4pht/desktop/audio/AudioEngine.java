@@ -10,26 +10,38 @@ audio stacks (notably ALSA/PulseAudio/PipeWire on Linux) will NOT open a raw
 app silent. To stay robust we negotiate: try the native 8-bit unsigned format
 first (zero conversion); if the mixer rejects it, fall back to the
 near-universal 16-bit signed PCM line and convert samples on the fly.
+
+Linux-specific improvements:
+- Explicit listing of available audio devices with diagnostics
+- Fallback through multiple 16-bit endianness options
+- Better error messages for troubleshooting
 */
 package com.vagell.kv4pht.desktop.audio;
 
 import com.vagell.kv4pht.desktop.radio.RadioProtocol;
+import org.slf4j.LoggerFactory;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.DataLine;
+import javax.sound.sampled.Line;
+import javax.sound.sampled.Mixer;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.TargetDataLine;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Logger;
 
 public class AudioEngine {
 
+  private static final org.slf4j.Logger log = LoggerFactory.getLogger(AudioEngine.class);
   /** The radio wire format: 8-bit UNSIGNED PCM, mono, 22050 Hz. */
   public static final AudioFormat WIRE_FORMAT = new AudioFormat(
       AudioFormat.Encoding.PCM_UNSIGNED,
       RadioProtocol.AUDIO_SAMPLE_RATE, 8, 1, 1,
       RadioProtocol.AUDIO_SAMPLE_RATE, false);
 
-  /** Fallback line format: 16-bit SIGNED PCM, mono (little- then big-endian). */
+  /** Fallback line formats: 16-bit SIGNED PCM, mono (little- then big-endian). */
   private static final AudioFormat WIDE_LE = new AudioFormat(
       AudioFormat.Encoding.PCM_SIGNED,
       RadioProtocol.AUDIO_SAMPLE_RATE, 16, 1, 2,
@@ -56,9 +68,13 @@ public class AudioEngine {
     AudioFormat chosen = chooseFormat(SourceDataLine.class);
     playbackConvert   = (chosen.getSampleSizeInBits() == 16);
     playbackBigEndian = chosen.isBigEndian();
-    playbackLine = (SourceDataLine) AudioSystem.getLine(new DataLine.Info(SourceDataLine.class, chosen));
+    log.info("Playback format: {} (convert={})", chosen, playbackConvert);
+    
+    SourceDataLine line = openLine(SourceDataLine.class, chosen);
+    playbackLine = line;
     playbackLine.open(chosen);
     playbackLine.start();
+    log.info("Playback started successfully");
   }
 
   public synchronized void playAudio(byte[] pcm8) {
@@ -90,8 +106,12 @@ public class AudioEngine {
     AudioFormat chosen = chooseFormat(TargetDataLine.class);
     captureConvert   = (chosen.getSampleSizeInBits() == 16);
     captureBigEndian = chosen.isBigEndian();
-    captureLine = (TargetDataLine) AudioSystem.getLine(new DataLine.Info(TargetDataLine.class, chosen));
+    log.info("Capture format: {} (convert={})", chosen, captureConvert);
+    
+    TargetDataLine line = openLine(TargetDataLine.class, chosen);
+    captureLine = line;
     captureLine.open(chosen);
+    log.info("Capture opened successfully");
   }
 
   public synchronized void startCapture() {
@@ -137,11 +157,126 @@ public class AudioEngine {
 
   // ---- Format negotiation & conversion ----
   private static <T> AudioFormat chooseFormat(Class<T> lineClass) throws Exception {
+    String lineType = lineClass.getSimpleName();
+    log.info("Negotiating {} format...", lineType);
+    
+    // Try formats in order: 8-bit native, then 16-bit little-endian, then 16-bit big-endian
     for (AudioFormat fmt : new AudioFormat[] { WIRE_FORMAT, WIDE_LE, WIDE_BE }) {
-      if (AudioSystem.isLineSupported(new DataLine.Info(lineClass, fmt))) return fmt;
+      DataLine.Info info = new DataLine.Info(lineClass, fmt);
+      if (AudioSystem.isLineSupported(info)) {
+        log.info("  ✓ {} supported: {}", lineType, formatDescription(fmt));
+        return fmt;
+      } else {
+        log.debug("  ✗ {} not supported: {}", lineType, formatDescription(fmt));
+      }
     }
+    
+    // No format matched. Log available devices for diagnostics.
+    logAvailableAudioDevices();
+    
     throw new Exception("No supported audio line (tried 8-bit unsigned and 16-bit signed PCM, "
         + RadioProtocol.AUDIO_SAMPLE_RATE + "Hz mono). Check your system's audio output/input device.");
+  }
+
+  private static String formatDescription(AudioFormat fmt) {
+    return String.format("%s, %d-bit, %.0f Hz, %s",
+        fmt.getEncoding(),
+        fmt.getSampleSizeInBits(),
+        fmt.getSampleRate(),
+        fmt.isBigEndian() ? "big-endian" : "little-endian");
+  }
+
+  private static <T> T openLine(Class<T> lineClass, AudioFormat fmt) throws Exception {
+    DataLine.Info info = new DataLine.Info(lineClass, fmt);
+    
+    // Try to use the default device first
+    try {
+      Line line = AudioSystem.getLine(info);
+      if (line != null) {
+        return (T) line;
+      }
+    } catch (Exception e) {
+      log.warn("Failed to get default line: {}", e.getMessage());
+    }
+    
+    // Fall back to finding any available mixer with this format
+    Mixer.Info[] mixers = AudioSystem.getMixerInfo();
+    for (Mixer.Info mixerInfo : mixers) {
+      try {
+        Mixer mixer = AudioSystem.getMixer(mixerInfo);
+        if (lineClass == SourceDataLine.class) {
+          if (mixer.isLineSupported(info)) {
+            Line line = mixer.getLine(info);
+            if (line != null) {
+              log.info("Using mixer: {}", mixerInfo.getName());
+              return (T) line;
+            }
+          }
+        } else if (lineClass == TargetDataLine.class) {
+          if (mixer.isLineSupported(info)) {
+            Line line = mixer.getLine(info);
+            if (line != null) {
+              log.info("Using mixer: {}", mixerInfo.getName());
+              return (T) line;
+            }
+          }
+        }
+      } catch (Exception e) {
+        log.debug("Mixer {} failed: {}", mixerInfo.getName(), e.getMessage());
+      }
+    }
+    
+    // Last resort: use default
+    return (T) AudioSystem.getLine(info);
+  }
+
+  private static void logAvailableAudioDevices() {
+    log.warn("=== Available Audio Devices ===");
+    Mixer.Info[] mixers = AudioSystem.getMixerInfo();
+    for (Mixer.Info mixerInfo : mixers) {
+      try {
+        Mixer mixer = AudioSystem.getMixer(mixerInfo);
+        log.warn("Mixer: {} (vendor: {}, version: {})",
+            mixerInfo.getName(), mixerInfo.getVendor(), mixerInfo.getVersion());
+        
+        // Log supported output formats
+        Line.Info[] sourceLines = mixer.getSourceLineInfo(new DataLine.Info(SourceDataLine.class, null));
+        if (sourceLines.length > 0) {
+          log.warn("  Playback lines: {}", sourceLines.length);
+          for (Line.Info lineInfo : sourceLines) {
+            if (lineInfo instanceof DataLine.Info) {
+              DataLine.Info dlInfo = (DataLine.Info) lineInfo;
+              AudioFormat[] formats = dlInfo.getFormats();
+              for (AudioFormat fmt : formats) {
+                if (fmt.getSampleRate() >= 22050 && fmt.getSampleRate() <= 48000) {
+                  log.warn("    - {}", formatDescription(fmt));
+                }
+              }
+            }
+          }
+        }
+        
+        // Log supported input formats
+        Line.Info[] targetLines = mixer.getTargetLineInfo(new DataLine.Info(TargetDataLine.class, null));
+        if (targetLines.length > 0) {
+          log.warn("  Capture lines: {}", targetLines.length);
+          for (Line.Info lineInfo : targetLines) {
+            if (lineInfo instanceof DataLine.Info) {
+              DataLine.Info dlInfo = (DataLine.Info) lineInfo;
+              AudioFormat[] formats = dlInfo.getFormats();
+              for (AudioFormat fmt : formats) {
+                if (fmt.getSampleRate() >= 22050 && fmt.getSampleRate() <= 48000) {
+                  log.warn("    - {}", formatDescription(fmt));
+                }
+              }
+            }
+          }
+        }
+      } catch (Exception e) {
+        log.warn("Error querying mixer {}: {}", mixerInfo.getName(), e.getMessage());
+      }
+    }
+    log.warn("=== End of Audio Devices ===");
   }
 
   static byte[] expand8uTo16s(byte[] pcm8, boolean bigEndian) {
